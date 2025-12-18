@@ -1,21 +1,27 @@
-name: Deploy App
+name: App Deploy (ECS)
 
 on:
   push:
     branches: [main]
     paths-ignore:
-      - 'terraform/**'
-      - '**.md'
+      - terraform/**
+      - "**.md"
   workflow_dispatch:
 
 env:
   AWS_REGION: ap-south-1
+  ECR_REPOSITORY: strapi
+  ECS_CLUSTER: strapi-cluster
+  ECS_SERVICE: strapi-service
+  TASK_FAMILY: strapi-task
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
@@ -28,28 +34,29 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and Push Image
+      - name: Build and Push Docker Image
         run: |
-          IMAGE=${{ steps.ecr.outputs.registry }}/strapi:${{ github.sha }}
+          IMAGE=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           docker build -t $IMAGE .
           docker push $IMAGE
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
       - name: Deploy to ECS
         run: |
-          # Get current task definition
-          aws ecs describe-task-definition --task-definition strapi-task \
-            --query taskDefinition > task-def.json
+          # Get current task definition and clean it
+          aws ecs describe-task-definition --task-definition $TASK_FAMILY \
+            --query 'taskDefinition' | \
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' > task-def.json
           
-          # Update image in task definition
-          sed -i "s|\"image\":.*|\"image\": \"$IMAGE\",|" task-def.json
+          # Update image
+          jq --arg IMAGE "$IMAGE" '.containerDefinitions[0].image = $IMAGE' task-def.json > task-def-updated.json
           
           # Register new task definition
-          aws ecs register-task-definition --cli-input-json file://task-def.json
+          aws ecs register-task-definition --cli-input-json file://task-def-updated.json
           
           # Update service
           aws ecs update-service \
-            --cluster strapi-cluster \
-            --service strapi-service \
-            --task-definition strapi-task \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition $TASK_FAMILY \
             --force-new-deployment
