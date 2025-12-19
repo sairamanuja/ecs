@@ -1,61 +1,189 @@
-# 🚀 Getting started with Strapi
+# 🚀 Strapi on AWS ECS with CI/CD
 
-Strapi comes with a full featured [Command Line Interface](https://docs.strapi.io/dev-docs/cli) (CLI) which lets you scaffold and manage your project in seconds.
-
-### `develop`
-
-Start your Strapi application with autoReload enabled. [Learn more](https://docs.strapi.io/dev-docs/cli#strapi-develop)
+## Architecture Overview
 
 ```
-npm run develop
-# or
-yarn develop
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              CI/CD PIPELINE                                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│   ┌──────────────┐      ┌──────────────┐      ┌──────────────┐                 │
+│   │   DEVELOPER  │      │    GITHUB    │      │   GITHUB     │                 │
+│   │              │ push │              │ trigger │  ACTIONS   │                 │
+│   │   git push   │─────►│    REPO      │────────►│            │                 │
+│   │              │      │   (main)     │         │ Workflows  │                 │
+│   └──────────────┘      └──────────────┘         └─────┬──────┘                 │
+│                                                        │                        │
+│                         ┌──────────────────────────────┼────────────────────┐   │
+│                         │                              │                    │   │
+│                         ▼                              ▼                    │   │
+│              ┌──────────────────┐          ┌──────────────────┐             │   │
+│              │   deploy.yml     │          │  terraform.yml   │             │   │
+│              │                  │          │                  │             │   │
+│              │ • Build Docker   │          │ • terraform init │             │   │
+│              │ • Push to ECR    │          │ • terraform plan │             │   │
+│              │ • Update ECS     │          │ • terraform apply│             │   │
+│              └────────┬─────────┘          └────────┬─────────┘             │   │
+│                       │                             │                       │   │
+└───────────────────────┼─────────────────────────────┼───────────────────────┘   │
+                        │                             │                           │
+                        ▼                             ▼                           │
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                             AWS CLOUD                                           │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐               │
+│  │    Amazon S3    │   │   Amazon ECR    │   │   DynamoDB      │               │
+│  │                 │   │                 │   │                 │               │
+│  │  Terraform      │   │  Docker Images  │   │  State Locks    │               │
+│  │  State Backend  │   │  strapi:sha     │   │                 │               │
+│  └─────────────────┘   └────────┬────────┘   └─────────────────┘               │
+│                                 │                                               │
+│                                 │ Pull Image                                    │
+│                                 ▼                                               │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │                          VPC (10.0.0.0/16)                                │ │
+│  │                                                                           │ │
+│  │  ┌─────────────────────────┐     ┌─────────────────────────┐             │ │
+│  │  │   Subnet A (10.0.1.0)   │     │   Subnet B (10.0.2.0)   │             │ │
+│  │  │      ap-south-1a        │     │      ap-south-1b        │             │ │
+│  │  │                         │     │                         │             │ │
+│  │  │  ┌───────────────────┐  │     │  ┌───────────────────┐  │             │ │
+│  │  │  │   ECS Fargate     │  │     │  │   ECS Fargate     │  │             │ │
+│  │  │  │                   │  │     │  │   (standby)       │  │             │ │
+│  │  │  │  ┌─────────────┐  │  │     │  │                   │  │             │ │
+│  │  │  │  │   Strapi    │  │  │     │  │                   │  │             │ │
+│  │  │  │  │  Container  │  │  │     │  │                   │  │             │ │
+│  │  │  │  │  Port:1337  │  │  │     │  │                   │  │             │ │
+│  │  │  │  └─────────────┘  │  │     │  └───────────────────┘  │             │ │
+│  │  │  └───────────────────┘  │     │                         │             │ │
+│  │  └────────────┬────────────┘     └─────────────────────────┘             │ │
+│  │               │                                                           │ │
+│  │               │ Port 5432 (SSL)                                          │ │
+│  │               ▼                                                           │ │
+│  │  ┌───────────────────────────────────────────────────────────────────┐   │ │
+│  │  │                    RDS PostgreSQL                                 │   │ │
+│  │  │                    (db.t3.micro)                                  │   │ │
+│  │  │                                                                   │   │ │
+│  │  │   Database: strapidb | Storage: 20GB | SSL: Enabled              │   │ │
+│  │  └───────────────────────────────────────────────────────────────────┘   │ │
+│  └───────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                 │
+│  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐               │
+│  │  CloudWatch     │   │  IAM Roles      │   │ Security Groups │               │
+│  │  Logs           │   │                 │   │                 │               │
+│  │  /ecs/strapi    │   │ • Execution     │   │ • ECS: 1337     │               │
+│  │                 │   │ • Task          │   │ • RDS: 5432     │               │
+│  └─────────────────┘   └─────────────────┘   └─────────────────┘               │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### `start`
-
-Start your Strapi application with autoReload disabled. [Learn more](https://docs.strapi.io/dev-docs/cli#strapi-start)
+## 📁 Project Structure
 
 ```
-npm run start
-# or
-yarn start
+strapi/
+├── .github/
+│   └── workflows/
+│       ├── deploy.yml        # App deployment (build → ECR → ECS)
+│       └── terraform.yml     # Infrastructure deployment
+├── terraform/
+│   ├── backend.tf            # S3 state backend
+│   ├── ecr.tf                # ECR repository
+│   ├── ecs.tf                # ECS cluster, service, task
+│   ├── rds.tf                # PostgreSQL database
+│   ├── iam.tf                # IAM roles
+│   ├── security-groups.tf    # Network security
+│   ├── variable.tf           # Variables
+│   └── output.tf             # Outputs
+├── config/                   # Strapi configuration
+├── src/                      # Strapi source code
+├── dockerfile                # Docker build
+└── docker-compose.yml        # Local development
 ```
 
-### `build`
+## 🔄 CI/CD Workflows
 
-Build your admin panel. [Learn more](https://docs.strapi.io/dev-docs/cli#strapi-build)
-
-```
-npm run build
-# or
-yarn build
-```
-
-## ⚙️ Deployment
-
-Strapi gives you many possible deployment options for your project including [Strapi Cloud](https://cloud.strapi.io). Browse the [deployment section of the documentation](https://docs.strapi.io/dev-docs/deployment) to find the best solution for your use case.
+### App Deployment (`deploy.yml`)
+Triggers on: Push to `main` (excluding `terraform/` and `*.md`)
 
 ```
-yarn strapi deploy
+git push → Build Docker → Push to ECR → Update ECS Task → Deploy
 ```
 
-## 📚 Learn more
+### Infrastructure (`terraform.yml`)
+Triggers on: Push to `main` with changes in `terraform/`
 
-- [Resource center](https://strapi.io/resource-center) - Strapi resource center.
-- [Strapi documentation](https://docs.strapi.io) - Official Strapi documentation.
-- [Strapi tutorials](https://strapi.io/tutorials) - List of tutorials made by the core team and the community.
-- [Strapi blog](https://strapi.io/blog) - Official Strapi blog containing articles made by the Strapi team and the community.
-- [Changelog](https://strapi.io/changelog) - Find out about the Strapi product updates, new features and general improvements.
+```
+git push → terraform init → terraform plan → terraform apply
+```
 
-Feel free to check out the [Strapi GitHub repository](https://github.com/strapi/strapi). Your feedback and contributions are welcome!
+## 🔐 GitHub Secrets Required
 
-## ✨ Community
+| Secret | Description |
+|--------|-------------|
+| `AWS_ACCESS_KEY_ID` | AWS access key |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
+| `TF_VAR_DB_PASSWORD` | RDS password |
+| `TF_VAR_APP_KEYS` | Strapi app keys |
+| `TF_VAR_JWT_SECRET` | JWT secret |
+| `TF_VAR_ADMIN_JWT_SECRET` | Admin JWT secret |
+| `TF_VAR_API_TOKEN_SALT` | API token salt |
+| `TF_VAR_TRANSFER_TOKEN_SALT` | Transfer token salt |
 
-- [Discord](https://discord.strapi.io) - Come chat with the Strapi community including the core team.
-- [Forum](https://forum.strapi.io/) - Place to discuss, ask questions and find answers, show your Strapi project and get feedback or just talk with other Community members.
-- [Awesome Strapi](https://github.com/strapi/awesome-strapi) - A curated list of awesome things related to Strapi.
+## 🚀 Quick Start
 
----
+### 1. Initial Setup (one-time)
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your values
+terraform init
+terraform apply
+```
 
-<sub>🤫 Psst! [Strapi is hiring](https://strapi.io/careers).</sub>
+### 2. Deploy App
+```bash
+git add .
+git commit -m "Your changes"
+git push origin main
+# GitHub Actions handles the rest!
+```
+
+### 3. Local Development
+```bash
+docker-compose up -d
+# Access at http://localhost:1337/admin
+```
+
+## 📊 Infrastructure Components
+
+| Component | Type | Purpose |
+|-----------|------|---------|
+| **ECR** | Container Registry | Store Docker images |
+| **ECS Fargate** | Serverless Compute | Run Strapi containers |
+| **RDS PostgreSQL** | Managed Database | Data persistence |
+| **S3** | Object Storage | Terraform state |
+| **DynamoDB** | NoSQL Database | State locking |
+| **CloudWatch** | Monitoring | Logs & metrics |
+| **IAM** | Security | Access control |
+
+## ✅ Features
+
+- 🔄 **Automated CI/CD** - Push to deploy
+- 🏗️ **Infrastructure as Code** - Terraform managed
+- 🔒 **Secure** - SSL, IAM roles, private DB
+- 📈 **Scalable** - ECS Fargate auto-scaling
+- 💾 **State Management** - S3 backend with locking
+- 📝 **Logging** - CloudWatch integration
+
+## 🌐 Access
+
+After deployment:
+- **Strapi Admin**: `http://<ECS_PUBLIC_IP>:1337/admin`
+- **API**: `http://<ECS_PUBLIC_IP>:1337/api`
+
+Get ECS task public IP:
+```bash
+aws ecs list-tasks --cluster strapi-cluster --region ap-south-1
+aws ecs describe-tasks --cluster strapi-cluster --tasks <TASK_ARN> --region ap-south-1
+```
